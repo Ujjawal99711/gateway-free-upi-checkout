@@ -8,6 +8,10 @@ Apps Script file.
 Built and battle-tested for a real ₹199 webinar checkout — this repo is the sanitized,
 generalized version of that backend, written up so anyone can reuse it.
 
+<p align="center">
+  <img src="assets/checkout-flow.gif" alt="Checkout flow: enter details, get a personal UPI QR, payment auto-confirms" width="360" />
+</p>
+
 ## The problem this solves
 
 If you want to sell something small and fast — a webinar seat, a digital download, a workshop —
