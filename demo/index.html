@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<!--
+  Standalone demo of calling the Apps Script backend as a JSON API from your own
+  page (instead of using the built-in doGet() page in apps-script/Code.gs).
+  This is plain HTML/JS with no build step, so you can see exactly what's happening —
+  copy the fetch calls below into whatever frontend stack you actually use.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Gateway-free UPI checkout — demo</title>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, Arial, sans-serif; background: #f4f5f7; color: #111; }
+  .wrap { max-width: 420px; margin: 0 auto; padding: 32px 16px; }
+  .card { background: #fff; border-radius: 14px; padding: 24px; box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #555; font-size: 14px; margin: 0 0 18px; }
+  label { display: block; font-size: 13px; font-weight: bold; margin: 12px 0 6px; }
+  input { width: 100%; padding: 12px; border: 1px solid #ccd; border-radius: 8px; font-size: 16px; }
+  button, .btn { display: block; width: 100%; margin-top: 18px; padding: 14px; border: 0; border-radius: 8px;
+    background: #5b3df5; color: #fff; font-size: 16px; font-weight: bold; text-align: center; text-decoration: none; cursor: pointer; }
+  button:disabled { opacity: .6; }
+  .err { color: #b00020; font-size: 14px; margin-top: 10px; min-height: 18px; }
+  .amt { font-size: 34px; font-weight: bold; color: #0a7d32; text-align: center; margin: 6px 0 2px; }
+  .note { font-size: 13px; color: #555; text-align: center; }
+  #qr { display: flex; justify-content: center; margin: 14px 0; }
+  #qr img { width: 230px; height: 230px; }
+  .status { margin-top: 16px; padding: 12px; border-radius: 8px; background: #eef3ff; font-size: 14px; text-align: center; }
+  .ok { background: #e5f4e4; color: #14532d; font-weight: bold; }
+  .hide { display: none; }
+  .config-note { max-width: 420px; margin: 0 auto 12px; font-size: 13px; color: #888; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="config-note">Demo page — set <code>WEBHOOK_URL</code> near the bottom of this file to your own deployed Apps Script /exec URL before this will actually work.</p>
+
+  <div class="card" id="step1">
+    <h1>Checkout</h1>
+    <p class="sub">Enter your details to get a payment QR.</p>
+    <label for="name">Full name</label><input id="name" autocomplete="name" />
+    <label for="phone">Phone</label><input id="phone" inputmode="tel" autocomplete="tel" />
+    <label for="email">Email</label><input id="email" type="email" autocomplete="email" />
+    <button id="go">Get my payment QR</button>
+    <div class="err" id="err"></div>
+    <p class="note">We use your details only to confirm and deliver this order.</p>
+  </div>
+
+  <div class="card hide" id="step2">
+    <h1>Pay to confirm</h1>
+    <div class="amt" id="amt"></div>
+    <p class="note">Pay this exact amount. The paise are your personal order code — please don't round it.</p>
+    <div id="qr"></div>
+    <p class="note" id="upi"></p>
+    <a class="btn" id="paybtn" href="#">Pay with UPI app</a>
+    <div class="status" id="status">Waiting for your payment. This page checks automatically every 15 seconds.</div>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Set this to your own deployed Apps Script web app URL (apps-script/Code.gs,
+// Deploy > New deployment > Web app). Leave as-is and this demo will just log
+// to the console instead of making a real request.
+// ---------------------------------------------------------------------------
+const WEBHOOK_URL = ''; // e.g. 'https://script.google.com/macros/s/XXXXXXXX/exec'
+const SITE_KEY = 'default'; // matches a key in the SITES object in Code.gs
+
+let reg = null;
+let pollTimer = null;
+
+async function callApi(payload) {
+  if (!WEBHOOK_URL) {
+    console.info('[demo] WEBHOOK_URL not set. Would have sent:', payload);
+    throw new Error('Set WEBHOOK_URL at the top of the <script> tag to try this for real.');
+  }
+  const res = await fetch(WEBHOOK_URL, {
+    method: 'POST',
+    // text/plain avoids a CORS preflight against the Apps Script web app
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ site: SITE_KEY, ...payload }),
+  });
+  const json = await res.json();
+  if (!json.ok) throw new Error(json.error || 'Request failed');
+  return json.data;
+}
+
+document.getElementById('go').addEventListener('click', async () => {
+  const btn = document.getElementById('go');
+  const err = document.getElementById('err');
+  const name = document.getElementById('name').value.trim();
+  const email = document.getElementById('email').value.trim();
+  const phone = document.getElementById('phone').value.trim();
+  err.textContent = '';
+
+  if (name.length < 2) { err.textContent = 'Please enter your name.'; return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { err.textContent = 'Please enter a valid email.'; return; }
+  if (phone.replace(/\D/g, '').length < 10) { err.textContent = 'Please enter a valid phone number.'; return; }
+
+  btn.disabled = true; btn.textContent = 'Please wait...';
+  try {
+    reg = await callApi({ action: 'register', name, email, phone });
+    showPaymentStep();
+  } catch (e) {
+    err.textContent = e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Get my payment QR';
+  }
+});
+
+function showPaymentStep() {
+  document.getElementById('step1').classList.add('hide');
+  document.getElementById('step2').classList.remove('hide');
+  document.getElementById('amt').textContent = '₹' + reg.amount;
+  document.getElementById('upi').textContent = 'To ' + reg.payee + ' (' + reg.upiId + ')';
+  document.getElementById('paybtn').href = reg.upiUrl;
+
+  const qr = qrcode(0, 'M');
+  qr.addData(reg.upiUrl);
+  qr.make();
+  document.getElementById('qr').innerHTML = qr.createImgTag(6, 8);
+
+  pollTimer = setInterval(checkStatus, 15000);
+}
+
+async function checkStatus() {
+  if (!reg) return;
+  let s;
+  try {
+    s = await callApi({ action: 'status', id: reg.id, token: reg.token });
+  } catch (_) {
+    return; // network blip — try again next tick
+  }
+  if (s.status === 'Paid') {
+    clearInterval(pollTimer);
+    const el = document.getElementById('status');
+    el.className = 'status ok';
+    el.textContent = 'Payment received! Confirmation sent to your email.';
+    document.getElementById('paybtn').classList.add('hide');
+  } else if (s.status === 'Review') {
+    clearInterval(pollTimer);
+    document.getElementById('status').textContent = 'We received a payment but need to check it by hand. We will email you shortly.';
+  } else if (s.status === 'Expired') {
+    clearInterval(pollTimer);
+    document.getElementById('status').textContent = 'This payment window expired. Please start again.';
+  }
+}
+</script>
+</body>
+</html>
